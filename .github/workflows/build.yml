@@ -1,0 +1,90 @@
+name: Build usedtobe.jar
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # If the zip itself was uploaded to the repo (GitHub does NOT unpack zips),
+      # unpack it here so the build still works. Does nothing when the project
+      # files are already in the repo.
+      - name: Unpack uploaded source zip (if needed)
+        run: |
+          if [ -z "$(find . -maxdepth 3 -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path './.git/*' | head -n 1)" ]; then
+            ZIP=$(find . -maxdepth 2 -type f -iname '*.zip' -not -path './.git/*' | head -n 1)
+            if [ -n "$ZIP" ]; then
+              echo "No Gradle project found, but found zip: $ZIP - unpacking it"
+              unzip -o -q "$ZIP" -x '.github/*'
+            fi
+          fi
+
+      # Works whether the project sits at the repo root or inside a subfolder.
+      - name: Find the Gradle project
+        id: locate
+        run: |
+          SETTINGS=$(find . -maxdepth 3 -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path './.git/*' | head -n 1)
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::No settings.gradle found in this repository. Upload the CONTENTS of usedtobe-mod-source.zip (build.gradle, settings.gradle, gradle.properties, src/ ...) - not the zip file itself."
+            echo "Repository contents:"
+            ls -la
+            exit 1
+          fi
+          DIR=$(dirname "$SETTINGS")
+          echo "Gradle project found in: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.1.1'
+
+      - name: Build mod
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: gradle build --no-daemon
+
+      - name: List build output
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: ls -l build/libs
+
+      - name: Upload usedtobe.jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: usedtobe
+          path: ${{ steps.locate.outputs.dir }}/build/libs/usedtobe.jar
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download jar
+        uses: actions/download-artifact@v4
+        with:
+          name: usedtobe
+          path: dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/usedtobe.jar
